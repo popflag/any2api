@@ -179,7 +179,7 @@ class Config:
         self.session_range = SessionRange()
         Config._initialized = False
     
-    def initialize(self, config_path: str = None) -> ClaudeConfig:
+    def initialize(self, config_path: str = "") -> ClaudeConfig:
         """初始化配置"""
         if Config._initialized:
             return self.config_model
@@ -187,7 +187,7 @@ class Config:
         random.seed()  # 初始化随机数种子
         
         # 确定配置加载顺序
-        loaders = []
+        loaders: List[ConfigLoader] = []
         
         # 1. 如果指定了配置文件路径
         if config_path:
@@ -256,7 +256,7 @@ def get_next_session() -> Optional[SessionInfo]:
     """获取下一个会话信息"""
     return Config().get_next_session()
 
-def initialize(config_path: str = None) -> ClaudeConfig:
+def initialize(config_path: str = "") -> ClaudeConfig:
     """初始化配置"""
     return Config().initialize(config_path)
 

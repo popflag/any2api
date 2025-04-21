@@ -48,3 +48,7 @@ async def modules_handler(authorized: bool = Depends(verify_token)):
         {"id": "claude-3-7-sonnet-20250219-think"},
     ]
     return {"data": models}
+
+@app.post("/v1/chat/completions")
+async def chat_completions_handler(request: Request):
+    return {"status": "ok"}
