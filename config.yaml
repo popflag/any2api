@@ -1,0 +1,20 @@
+# Sessions configuration
+sessions:
+  - session_key: "sk-ant-sid01-xxxx"
+    org_id: ""
+  - session_key: "sk-ant-sid01-yyyy"
+    org_id: ""
+
+# Server address
+address: "0.0.0.0:8080"
+
+# API authentication key
+api_key: "123"
+
+# Other configuration options...
+chat_delete: true
+max_chat_history_length: 10000
+no_role_prefix: false
+prompt_disable_artifacts: false
+enable_mirror_api: false
+mirror_api_prefix: ""
