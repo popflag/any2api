@@ -1,26 +1,11 @@
 from typing import Callable, Awaitable
 
 from fastapi import FastAPI, Request, Response, HTTPException  # 添加HTTPException导入
-from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 import claude2api.config as config
-from config_parser import load_config  # 导入配置加载函数
-
-# 加载配置
-yaml_config = load_config("config.yaml")
-
-# 更新全局配置实例
-config.ConfigInstance.api_key = yaml_config.get("api_key", "")
-config.ConfigInstance.address = yaml_config.get("address", "0.0.0.0:8080")
-config.ConfigInstance.sessions = yaml_config.get("sessions", [])
-config.ConfigInstance.chat_delete = yaml_config.get("chat_delete", True)
-config.ConfigInstance.max_chat_history_length = yaml_config.get("max_chat_history_length", 10000)
-config.ConfigInstance.no_role_prefix = yaml_config.get("no_role_prefix", False)
-config.ConfigInstance.prompt_disable_artifacts = yaml_config.get("prompt_disable_artifacts", False)
-config.ConfigInstance.enable_mirror_api = yaml_config.get("enable_mirror_api", False)
-config.ConfigInstance.mirror_api_prefix = yaml_config.get("mirror_api_prefix", "")
 
 app = FastAPI()
+
 
 # 自定义认证中间件
 class AuthMiddleware(BaseHTTPMiddleware):
