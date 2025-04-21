@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from claude2api.config import config_instance
+from claude2api.config import get_config
 
 app = FastAPI()
 
@@ -16,6 +16,7 @@ app.add_middleware(
 # 创建用于处理Bearer令牌的安全组件
 security = HTTPBearer(auto_error=False)
 
+config_instance = get_config()
 
 # 验证API密钥的依赖项
 async def verify_token(
