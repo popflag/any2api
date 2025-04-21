@@ -3,13 +3,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import logging
 import asyncio
-from typing import Optional
-
+from typing import Optional, List, Dict, Any
+import time
+import uuid
+from pydantic import BaseModel, Field, ValidationError
+from json.decoder import JSONDecodeError
+from fastapi.responses import StreamingResponse
 from claude2api.config import get_config, get_next_session, SessionInfo
-from claude2api.model import ChatCompletionRequest
-# Assuming core, ChatRequestProcessor are defined elsewhere.  If not, define them.
-# from claude2api import core  # Uncomment if core is in claude2api
-# from claude2api.processor import ChatRequestProcessor # Uncomment if processor is in claude2api
 
 app = FastAPI()
 
@@ -154,15 +154,87 @@ async def cleanup_conversation(client, conversation_id: str, retry: int) -> None
     )
 
 
-# 从请求中解析和验证请求
+# 请求模型
+class ChatCompletionRequest(BaseModel):
+    """聊天请求模型"""
+
+    model: str = "claude-3-7-sonnet-20250219"
+    messages: List[Dict[str, Any]]
+    stream: bool = True
+    tools: Optional[List[Dict[str, Any]]] = None
+
+
+# 流式响应相关模型
+class Delta(BaseModel):
+    """增量内容模型"""
+
+    content: str
+
+
+class StreamChoice(BaseModel):
+    """流式选择模型"""
+
+    index: int
+    delta: Delta
+    logprobs: Optional[Any] = None
+    finish_reason: Optional[Any] = None
+
+
+# 非流式响应相关模型
+class Message(BaseModel):
+    """消息模型"""
+
+    role: str
+    content: str
+    refusal: Optional[Any] = None
+    annotation: Optional[List[Any]] = None
+
+
+class NoStreamChoice(BaseModel):
+    """非流式选择模型"""
+
+    index: int
+    message: Message
+    logprobs: Optional[Any] = None
+    finish_reason: str = "stop"
+
+
+class Usage(BaseModel):
+    """使用统计模型"""
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+
+class OpenAIStreamResponse(BaseModel):
+    """OpenAI 流式响应模型"""
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    object: str = "chat.completion.chunk"
+    created: int = Field(default_factory=lambda: int(time.time()))
+    model: str = "claude-3-7-sonnet-20250219"
+    choices: List[StreamChoice]
+
+
+class OpenAIResponse(BaseModel):
+    """OpenAI 完整响应模型"""
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    object: str = "chat.completion"
+    created: int = Field(default_factory=lambda: int(time.time()))
+    model: str = "claude-3-7-sonnet-20250219"
+    choices: List[NoStreamChoice]
+    usage: Usage
+
+
 async def parse_and_validate_request(request: Request) -> ChatCompletionRequest:
     """解析并验证请求"""
     try:
         # 从请求体中提取 JSON 数据
         json_data = await request.json()
-        # 使用默认值创建请求对象
-        req = ChatCompletionRequest(stream=True)
-        # 更新请求对象
+
+        # 使用 Pydantic 模型直接验证和解析请求数据
         req = ChatCompletionRequest(**json_data)
 
         # 验证消息
@@ -170,34 +242,158 @@ async def parse_and_validate_request(request: Request) -> ChatCompletionRequest:
             raise HTTPException(status_code=400, detail={"error": "未提供消息"})
 
         return req
+    except ValidationError as ve:
+        # 捕获 Pydantic 验证错误并返回详细信息
+        logging.error(f"请求验证失败: {ve}")
+        raise HTTPException(
+            status_code=400, detail={"error": f"请求验证失败: {str(ve)}"}
+        )
+    except JSONDecodeError as je:
+        # 捕获 JSON 解析错误
+        logging.error(f"无效的 JSON 格式: {je}")
+        raise HTTPException(status_code=400, detail={"error": "无效的 JSON 格式"})
     except Exception as e:
+        # 捕获其他所有错误
+        logging.error(f"请求处理错误: {e}")
         raise HTTPException(status_code=400, detail={"error": f"无效的请求: {str(e)}"})
 
 
-# 获取模型名称或使用默认值
-def get_model_or_default(model: str) -> str:
-    """获取模型或使用默认模型"""
-    if not model:
-        return "claude-3-7-sonnet-20250219"
-    return model
+async def return_openai_response(text: str, stream: bool, request: Request):
+    """生成 OpenAI 格式的响应"""
+    if stream:
+        return await stream_response(text, request)
+    else:
+        return await no_stream_response(text)
 
 
-# 创建处理器实例
-# processor = ChatRequestProcessor() # Uncomment if processor is in claude2api
-class ChatRequestProcessor:  # Dummy class
+async def stream_response(text: str, request: Request):
+    """生成流式响应"""
+    # 创建流式响应对象
+    resp = OpenAIStreamResponse(
+        choices=[StreamChoice(index=0, delta=Delta(content=text))]
+    )
+
+    # 转换为 JSON
+    json_data = resp.model_dump_json()
+
+    # 添加 SSE 格式
+    formatted_data = f"data: {json_data}\n\n"
+
+    async def generate():
+        yield formatted_data
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+async def no_stream_response(text: str):
+    """生成非流式响应"""
+    resp = OpenAIResponse(
+        choices=[
+            NoStreamChoice(index=0, message=Message(role="assistant", content=text))
+        ],
+        usage=Usage(),
+    )
+
+    return resp
+
+
+# 聊天请求处理器
+class ChatRequestProcessor:
+    """聊天请求处理器，用于处理聊天消息和提取图片数据"""
+
     def __init__(self):
-        self.img_data_list = []
+        """初始化处理器"""
+        self.prompt = ""  # 当前提示内容
+        self.root_prompt = ""  # 原始提示内容备份
+        self.img_data_list = []  # 图片数据列表
+
+    def get_role_prefix(self, role: str) -> str:
+        """获取角色前缀"""
+        role_map = {
+            "system": "System: ",
+            "user": "Human: ",
+            "assistant": "Assistant: ",
+            "tool": "T: ",
+        }
+        return role_map.get(role.lower(), f"{role.capitalize()}: ")
+
+    def process_messages(self, messages: List[Dict[str, Any]]) -> None:
+        """处理消息数组为提示并提取图片
+
+        Args:
+            messages: 消息列表
+        """
+        config_instance = get_config()
+
+        # 如果配置禁用了 artifacts
+        if (
+            hasattr(config_instance, "prompt_disable_artifacts")
+            and config_instance.prompt_disable_artifacts
+        ):
+            self.prompt = "System: Forbidden to use <antArtifac> </antArtifac> to wrap code blocks, use markdown syntax instead, which means wrapping code blocks with ``` ```\n\n"
+        else:
+            self.prompt = ""
+
+        # 处理每条消息
+        for msg in messages:
+            # 检查消息是否有效
+            if "role" not in msg:
+                continue
+
+            role = msg["role"]
+            if "content" not in msg:
+                continue
+
+            content = msg["content"]
+            role_prefix = self.get_role_prefix(role)
+            self.prompt += role_prefix
+
+            # 处理不同类型的内容
+            if isinstance(content, str):
+                # 直接是字符串类型
+                self.prompt += content + "\n\n"
+            elif isinstance(content, list):
+                # 内容是列表类型
+                for item in content:
+                    if not isinstance(item, dict) or "type" not in item:
+                        continue
+
+                    item_type = item["type"]
+                    if item_type == "text" and "text" in item:
+                        self.prompt += item["text"] + "\n\n"
+                    elif item_type == "image_url" and "image_url" in item:
+                        # 提取图片URL并添加到图片列表
+                        if (
+                            isinstance(item["image_url"], dict)
+                            and "url" in item["image_url"]
+                        ):
+                            self.img_data_list.append(item["image_url"]["url"])
+
+        # 保存原始提示
+        self.root_prompt = self.prompt
+
+        # 调试输出
+        logging.debug(f"处理后的提示: {self.prompt}")
+        logging.debug(f"图片数据列表: {self.img_data_list}")
+
+    def reset(self) -> None:
+        """重置处理器"""
         self.prompt = ""
-        self.root_prompt = ""
+        self.img_data_list = []
 
-    def process_messages(self, messages):
-        pass
+    def reset_for_big_context(self) -> None:
+        """重置提示为大型上下文使用"""
+        self.prompt = ""
+        config_instance = get_config()
 
-    def reset(self):
-        pass
+        # 如果配置禁用了 artifacts
+        if (
+            hasattr(config_instance, "prompt_disable_artifacts")
+            and config_instance.prompt_disable_artifacts
+        ):
+            self.prompt += "System: Forbidden to use <antArtifac> </antArtifac> to wrap code blocks, use markdown syntax instead, which means wrapping code blocks with ``` ```\n\n"
 
-    def reset_for_big_context(self):
-        pass
+        self.prompt += "You must immerse yourself in the role of assistant in context.txt, cannot respond as a user, cannot reply to this message, cannot mention this message, and ignore this message in your response.\n\n"
 
 
 processor = ChatRequestProcessor()
@@ -214,8 +410,8 @@ async def chat_completions_handler(
     except HTTPException as e:
         return e.detail
 
-    # 获取模型名称或使用默认模型
-    model = get_model_or_default(req.model)
+    # 获取模型名称
+    model = req.model  # 现在这是一个固定的字段，不需要检查是否存在
 
     # 获取配置实例
     config_instance = get_config()
@@ -244,9 +440,8 @@ async def chat_completions_handler(
             request, session, model, processor, req.stream
         )
         if success:
-            # 这里的实现可能需要根据您的需求进行调整
-            # 如果 handle_chat_request 函数已经处理了响应（例如 StreamingResponse），则这里不需要返回
-            # 否则，您可能需要返回适当的响应
+            # 这里应该根据实际情况返回响应
+            # 假设 handle_chat_request 在内部使用了 return_openai_response
             return
 
         # 如果到这里，请求失败 - 使用另一个会话重试
