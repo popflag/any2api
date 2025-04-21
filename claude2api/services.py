@@ -6,6 +6,7 @@ from json.decoder import JSONDecodeError
 from pydantic import ValidationError
 from claude2api.config import get_config
 from claude2api.models import ChatCompletionRequest
+from claude2api import core
 
 
 class ChatRequestProcessor:
@@ -119,7 +120,7 @@ async def cleanup_conversation(client, conversation_id: str, retry: int) -> None
     """清理会话"""
     for i in range(retry):
         try:
-            # await client.delete_conversation(conversation_id) # Uncomment if core is in claude2api
+            await client.delete_conversation(conversation_id)
             logging.info(f"成功删除会话: {conversation_id}")
             return
         except Exception as e:
@@ -136,34 +137,31 @@ async def handle_chat_request(request, session, model, processor, stream=True) -
     """处理聊天请求"""
     # 初始化 Claude 客户端
     config_instance = get_config()
-    # claude_client = await core.new_client(session.session_key, config_instance.proxy) # Uncomment if core is in claude2api
-    claude_client = None  # Replace with actual client initialization
+    claude_client = await core.new_client(session.session_key, config_instance.proxy)
 
     # 如果没有组织 ID，则获取
     if not session.org_id:
         try:
-            # org_id = await claude_client.get_org_id() # Uncomment if core is in claude2api
-            org_id = "dummy_org_id"  # Replace with actual org id retrieval
+            org_id = await claude_client.get_org_id()
             session.org_id = org_id
             config_instance.set_session_org_id(session.session_key, session.org_id)
         except Exception as e:
             logging.error(f"获取组织 ID 失败: {e}")
             return False
 
-    # claude_client.set_org_id(session.org_id) # Uncomment if core is in claude2api
+    claude_client.set_org_id(session.org_id)
 
     # 上传图片文件（如果有）
     if processor.img_data_list:
         try:
-            # await claude_client.upload_file(processor.img_data_list) # Uncomment if core is in claude2api
-            pass
+            await claude_client.upload_file(processor.img_data_list)
         except Exception as e:
             logging.error(f"上传文件失败: {e}")
             return False
 
     # 处理大型上下文
     if len(processor.prompt) > config_instance.max_chat_history_length:
-        # await claude_client.set_big_context(processor.prompt) # Uncomment if core is in claude2api
+        claude_client.set_big_context(processor.prompt)
         processor.reset_for_big_context()
         logging.info(
             f"提示长度超过最大限制 ({config_instance.max_chat_history_length})，使用文件上下文"
@@ -171,18 +169,20 @@ async def handle_chat_request(request, session, model, processor, stream=True) -
 
     # 创建会话
     try:
-        # conversation_id = await claude_client.create_conversation(model) # Uncomment if core is in claude2api
-        conversation_id = (
-            "dummy_conversation_id"  # Replace with actual conversation creation
-        )
+        conversation_id = await claude_client.create_conversation(model)
     except Exception as e:
         logging.error(f"创建会话失败: {e}")
         return False
 
     # 发送消息
     try:
-        # await claude_client.send_message(conversation_id, processor.prompt, stream, request) # Uncomment if core is in claude2api
-        pass
+        status = await claude_client.send_message(
+            conversation_id, processor.prompt, stream, request
+        )
+        if status != 200:
+            logging.error(f"发送消息失败，状态码: {status}")
+            asyncio.create_task(cleanup_conversation(claude_client, conversation_id, 3))
+            return False
     except Exception as e:
         logging.error(f"发送消息失败: {e}")
         asyncio.create_task(cleanup_conversation(claude_client, conversation_id, 3))
