@@ -16,5 +16,3 @@ chat_delete: true
 max_chat_history_length: 10000
 no_role_prefix: false
 prompt_disable_artifacts: false
-enable_mirror_api: false
-mirror_api_prefix: ""

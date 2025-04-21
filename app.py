@@ -1,41 +1,38 @@
-from typing import Callable, Awaitable
-
-from fastapi import FastAPI, Request, Response, HTTPException  # 添加HTTPException导入
-from starlette.middleware.base import BaseHTTPMiddleware
-import claude2api.config as config
+from fastapi import FastAPI, Request, HTTPException, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from claude2api.config import config_instance
 
 app = FastAPI()
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# 自定义认证中间件
-class AuthMiddleware(BaseHTTPMiddleware):
-    async def dispatch(
-        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
-    ) -> Response:
-        # 检查是否启用镜像API且路径匹配
-        if config.ConfigInstance.EnableMirrorApi and request.url.path.startswith(
-            config.ConfigInstance.MirrorApiPrefix
-        ):
-            request.state.use_mirror_api = True
-            return await call_next(request)
-
-        # 获取Authorization头
-        auth_header = request.headers.get("Authorization")
-        if auth_header:
-            key = auth_header.replace("Bearer ", "", 1)
-            if key == config.ConfigInstance.APIKey:
-                request.state.authenticated = True
-                return await call_next(request)
-            else:
-                return HTTPException(status_code=401, detail="Invalid API key")
-        else:
-            return HTTPException(
-                status_code=401, detail="Missing or invalid Authorization header"
-            )
+# 创建用于处理Bearer令牌的安全组件
+security = HTTPBearer(auto_error=False)
 
 
-# 添加认证中间件
-app.add_middleware(AuthMiddleware)
+# 验证API密钥的依赖项
+async def verify_token(
+    request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    # 验证Authorization头
+    if not credentials:
+        raise HTTPException(
+            status_code=401, detail={"error": "缺少或无效的Authorization头信息"}
+        )
+
+    # 提取并验证API密钥
+    token = credentials.credentials
+    if token != config_instance.api_key:
+        raise HTTPException(status_code=401, detail={"error": "无效的API密钥"})
+
+    return True
 
 
 @app.get("/health")
@@ -44,7 +41,7 @@ async def health_check_handler(request: Request):
 
 
 @app.get("/v1/models")
-def modules_handler():
+async def modules_handler(authorized: bool = Depends(verify_token)):
     models = [
         {"id": "claude-3-7-sonnet-20250219"},
         {"id": "claude-3-7-sonnet-20250219-think"},
