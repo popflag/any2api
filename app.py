@@ -309,13 +309,22 @@ class ChatRequestProcessor:
 
     def get_role_prefix(self, role: str) -> str:
         """获取角色前缀"""
+        # 如果配置指定不使用角色前缀，则返回空字符串
+        config_instance = get_config()
+        if (
+            hasattr(config_instance, "no_role_prefix")
+            and config_instance.no_role_prefix
+        ):
+            return ""
+
+        # 根据角色返回对应前缀
         role_map = {
             "system": "System: ",
             "user": "Human: ",
             "assistant": "Assistant: ",
-            "tool": "T: ",
         }
-        return role_map.get(role.lower(), f"{role.capitalize()}: ")
+        # 返回对应的角色前缀，如果角色不在映射中则返回 "Unknown: "
+        return role_map.get(role.lower(), "Unknown: ")
 
     def process_messages(self, messages: List[Dict[str, Any]]) -> None:
         """处理消息数组为提示并提取图片
@@ -427,13 +436,13 @@ async def chat_completions_handler(
 
         logging.info(f"使用模型 {model} 的会话: {session.session_key}")
 
+        # 处理消息
+        processor.process_messages(req.messages)
+
         # 如果是重试，重置处理器
         if i > 0:
             processor.reset()
             processor.prompt = processor.root_prompt
-
-        # 处理消息
-        processor.process_messages(req.messages)
 
         # 初始化客户端并处理请求
         success = await handle_chat_request(
