@@ -1,8 +1,8 @@
-import logging
+from loguru import logger
 import json
 import uuid
 import base64
-from typing import List, Dict, Any, Optional, AsyncGenerator  # 导入 AsyncGenerator
+from typing import List, Dict, Any, AsyncGenerator  # 导入 AsyncGenerator
 
 # 移除 FastAPI Request 导入
 # from fastapi import Request
@@ -143,7 +143,7 @@ class ClaudeClient:
             raise Exception("未找到默认组织")
 
         except Exception as e:
-            logging.error(f"获取组织 ID 失败: {e}")
+            logger.error(f"获取组织 ID 失败: {e}")
             raise
 
     def set_org_id(self, org_id: str) -> None:
@@ -201,7 +201,7 @@ class ClaudeClient:
             return conversation_id
 
         except Exception as e:
-            logging.error(f"创建会话失败: {e}")
+            logger.error(f"创建会话失败: {e}")
             raise
 
     async def send_message(
@@ -213,14 +213,6 @@ class ClaudeClient:
             conversation_id: 会话 ID
             message: 消息内容
             stream: 是否流式响应
-
-        Yields:
-            Dict[str, Any]: 包含事件类型和内容的字典
-                - type: "text", "thinking", "error", "done"
-                - content: 事件的具体内容 (文本、错误消息等)
-
-        Raises:
-            Exception: 未设置组织 ID 时抛出
         """
         if not self.org_id:
             # 直接抛出异常，因为这是客户端配置问题，不是流中的事件
@@ -232,48 +224,32 @@ class ClaudeClient:
         request_body = self.request_attrs.copy()
         request_body["prompt"] = message
 
-        try:
-            response = await self.session.post(
-                url,
-                json=request_body,
-                headers={
-                    "referer": f"https://claude.ai/chat/{conversation_id}",
-                    "accept": "text/event-stream, text/event-stream",
-                    "anthropic-client-platform": "web_claude_ai",
-                    "cache-control": "no-cache",
-                },
-                stream=True,  # 必须为 True 以便 aiter_lines 工作
-            )
+        response: curl_Response = await self.session.post(
+            url,
+            json=request_body,
+            headers={
+                "referer": f"https://claude.ai/chat/{conversation_id}",
+                "accept": "text/event-stream, text/event-stream",
+                "anthropic-client-platform": "web_claude_ai",
+                "cache-control": "no-cache",
+            },
+            stream=True,
+        )
 
-            logging.info(f"Claude 响应状态码: {response.status_code}")
+        logger.info(f"Claude 响应状态码: {response.status_code}")
 
-            # 在开始流式处理前检查初始状态码
-            if response.status_code == 429:
-                yield {"type": "error", "content": "Rate limit exceeded"}
-                return  # 停止生成器
-            elif response.status_code != 200:
-                # 尝试读取错误信息（如果可能）
-                error_content = f"发送消息失败，状态码: {response.status_code}"
-                try:
-                    error_body = await response.text()
-                    # 避免将整个响应体放入错误信息，只取前几百个字符
-                    error_content += f", 响应: {error_body[:500]}{'...' if len(error_body) > 500 else ''}"
-                except Exception:
-                    pass  # 忽略读取响应体的错误
-                yield {"type": "error", "content": error_content}
-                return  # 停止生成器
+        # 在开始流式处理前检查初始状态码
+        if response.status_code == 429:
+            yield {"type": "error", "content": "Rate limit exceeded"}
+            return  # 停止生成器
+        elif response.status_code != 200:
+            # TODO: 处理错误
+            logger.error("请求出错")
 
-            # 处理流式响应
-            # 使用 async for 迭代 _handle_response 生成器并 yield 其结果
-            async for event in self._handle_response(response, stream):
-                yield event
-            # 移除 return 200
-
-        except Exception as e:
-            logging.error(f"发送消息失败: {e}")
-            # 捕获发送请求本身的异常，并 yield 一个错误事件
-            yield {"type": "error", "content": f"发送消息时发生网络或内部错误: {e}"}
-            # 不再 raise e，让调用方处理生成器结束
+        # 处理流式响应
+        # 使用 async for 迭代 _handle_response 生成器并 yield 其结果
+        async for event in self._handle_response(response, stream):
+            yield event
 
     async def _handle_response(
         self, response: curl_Response, stream: bool
@@ -289,15 +265,8 @@ class ClaudeClient:
                 - type: "text", "thinking", "error", "done"
                 - content: 事件的具体内容 (文本、错误消息等)
         """
-        # 移除对 return_openai_response 的依赖
-        # from claude2api.utils import return_openai_response # 删除此行
-
         # 跟踪完整响应文本（用于非流式模式）
         res_all_text = ""
-        # 跟踪思考状态，用于在文本块前添加/移除 <think> 标签
-        # 注意：这里的 <think> 标签处理逻辑是模拟，实际 Claude API 可能有变化
-        # 简化处理：只传递思考内容，由调用方决定如何呈现
-        # thinking_shown = False # 移除此行，简化处理
 
         async for line in response.aiter_lines():
             # 移除 request.is_disconnected() 检查
@@ -328,10 +297,6 @@ class ClaudeClient:
                 # 处理文本增量
                 if self._is_text_delta(event):
                     res_text = event["delta"]["text"]
-                    # 移除 thinking_shown 逻辑
-                    # if thinking_shown:
-                    #     res_text = "</think>\n" + res_text
-                    #     thinking_shown = False
 
                     res_all_text += res_text
                     if stream:
@@ -362,7 +327,7 @@ class ClaudeClient:
                     pass  # 忽略 Claude 的 completion 事件，等待流结束
 
             except json.JSONDecodeError:
-                logging.warning(f"解析 SSE 事件失败: {data}")
+                logger.warning(f"解析 SSE 事件失败: {data}")
                 # 可以选择 yield 一个解析错误事件
                 # yield {"type": "error", "content": f"解析 SSE 事件失败: {data}"}
                 continue  # 继续处理下一行
@@ -425,7 +390,7 @@ class ClaudeClient:
                 )
 
         except Exception as e:
-            logging.error(f"删除会话失败: {e}")
+            logger.error(f"删除会话失败: {e}")
             raise
 
     async def upload_file(self, file_data: List[str]) -> None:
@@ -442,7 +407,7 @@ class ClaudeClient:
 
         if not file_data:
             # 文件数据为空不应抛出异常，只是没有文件需要上传
-            logging.info("没有文件数据需要上传")
+            logger.info("没有文件数据需要上传")
             return
 
         # 确保files数组已初始化
@@ -521,12 +486,12 @@ class ClaudeClient:
                 ):
                     self.request_attrs["files"] = []
                 self.request_attrs["files"].append(file_uuid)  # type: ignore
-                logging.info(
+                logger.info(
                     f"文件 {filename} ({content_type}) 上传成功，UUID: {file_uuid}"
                 )
 
             except Exception as e:
-                logging.error(f"上传文件失败: {e}")
+                logger.error(f"上传文件失败: {e}")
                 raise
 
     def set_big_context(self, context: str) -> None:
@@ -549,7 +514,7 @@ class ClaudeClient:
                 "extracted_content": context,
             }
         )
-        logging.info("大型上下文已添加到请求属性中")
+        logger.info("大型上下文已添加到请求属性中")
 
 
 async def new_client(session_key: str, proxy: str = "") -> ClaudeClient:

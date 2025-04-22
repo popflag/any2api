@@ -1,10 +1,11 @@
-import logging
+from loguru import logger
 import asyncio
 from typing import Dict, Any, AsyncGenerator, List
 from pydantic import BaseModel
 
 from claude2api.core import ClaudeClient, new_client
 from claude2api.config import SessionInfo, get_config
+from claude2api.models import ChatCompletionRequest
 
 config_instance = get_config()
 
@@ -14,14 +15,6 @@ class ChatMessage(BaseModel):
 
     role: str
     content: str
-
-
-class ChatRequest(BaseModel):
-    """聊天请求模型"""
-
-    model: str
-    messages: List[Dict[str, Any]]
-    stream: bool = True
 
 
 class ChatPipeline:
@@ -105,8 +98,8 @@ class ChatPipeline:
         self.root_prompt = self.prompt
 
         # 调试输出
-        logging.debug(f"Processed prompt: {self.prompt}")
-        logging.debug(f"Image data list: {self.img_data_list}")
+        logger.debug(f"Processed prompt: {self.prompt}")
+        logger.debug(f"Image data list: {self.img_data_list}")
 
     def reset(self) -> None:
         """重置处理器状态"""
@@ -127,7 +120,7 @@ class ChatPipeline:
         self.prompt += "You must immerse yourself in the role of assistant in context.txt, cannot respond as a user, cannot reply to this message, cannot mention this message, and ignore this message in your response.\n\n"
 
     async def execute(
-        self, request: ChatRequest, session: SessionInfo
+        self, request: ChatCompletionRequest, session: SessionInfo
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """处理聊天请求并生成响应流
 
@@ -157,9 +150,9 @@ class ChatPipeline:
                     config_instance.set_session_org_id(
                         session.session_key, session.org_id
                     )
-                    logging.info(f"成功获取并设置组织 ID: {org_id}")
+                    logger.info(f"成功获取并设置组织 ID: {org_id}")
                 except Exception as e:
-                    logging.error(f"获取组织 ID 失败: {e}")
+                    logger.error(f"获取组织 ID 失败: {e}")
                     yield {"type": "error", "content": f"获取组织 ID 失败: {e}"}
                     return  # 发生错误，停止执行
 
@@ -169,9 +162,9 @@ class ChatPipeline:
             if self.img_data_list:
                 try:
                     await claude_client.upload_file(self.img_data_list)
-                    logging.info(f"成功上传 {len(self.img_data_list)} 个文件")
+                    logger.info(f"成功上传 {len(self.img_data_list)} 个文件")
                 except Exception as e:
-                    logging.error(f"上传文件失败: {e}")
+                    logger.error(f"上传文件失败: {e}")
                     yield {"type": "error", "content": f"上传文件失败: {e}"}
                     return  # 发生错误，停止执行
 
@@ -180,20 +173,20 @@ class ChatPipeline:
                 try:
                     claude_client.set_big_context(self.prompt)
                     self.reset_for_big_context()
-                    logging.info(
+                    logger.info(
                         f"提示长度超过最大限制 ({config_instance.max_chat_history_length})，使用文件上下文"
                     )
                 except Exception as e:
-                    logging.error(f"设置大型上下文失败: {e}")
+                    logger.error(f"设置大型上下文失败: {e}")
                     yield {"type": "error", "content": f"设置大型上下文失败: {e}"}
                     return  # 发生错误，停止执行
 
             # 创建会话
             try:
                 conversation_id = await claude_client.create_conversation(request.model)
-                logging.info(f"成功创建会话: {conversation_id}")
+                logger.info(f"成功创建会话: {conversation_id}")
             except Exception as e:
-                logging.error(f"创建会话失败: {e}")
+                logger.error(f"创建会话失败: {e}")
                 yield {"type": "error", "content": f"创建会话失败: {e}"}
                 return  # 发生错误，停止执行
 
@@ -205,10 +198,11 @@ class ChatPipeline:
 
                 # 转发来自Claude客户端的事件
                 async for event in message_generator:
+                    logger.debug(event)
                     yield event
 
             except Exception as e:
-                logging.error(f"处理消息流时发生意外错误: {e}")
+                logger.error(f"处理消息流时发生意外错误: {e}")
                 yield {"type": "error", "content": f"处理响应时发生内部错误: {e}"}
 
         finally:
@@ -218,7 +212,7 @@ class ChatPipeline:
                 asyncio.create_task(
                     self._cleanup_conversation(claude_client, conversation_id, 3)
                 )
-                logging.info(f"已调度会话 {conversation_id} 的清理任务")
+                logger.info(f"已调度会话 {conversation_id} 的清理任务")
 
     async def _cleanup_conversation(
         self, client: ClaudeClient, conversation_id: str, retry: int
@@ -233,14 +227,14 @@ class ChatPipeline:
         for i in range(retry):
             try:
                 await client.delete_conversation(conversation_id)
-                logging.info(f"成功删除会话: {conversation_id}")
+                logger.info(f"成功删除会话: {conversation_id}")
                 return
             except Exception as e:
-                logging.error(f"删除会话失败 (重试 {i + 1}/{retry}): {e}")
+                logger.error(f"删除会话失败 (重试 {i + 1}/{retry}): {e}")
                 await asyncio.sleep(2)
 
         # 当所有重试都失败后执行
-        logging.error(f"清理会话 {conversation_id} 在 {retry} 次重试后失败")
+        logger.error(f"清理会话 {conversation_id} 在 {retry} 次重试后失败")
 
 
 # 创建单例实例供全局使用

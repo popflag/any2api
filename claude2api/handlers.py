@@ -1,13 +1,41 @@
-import logging
+from loguru import logger
 from fastapi import Request, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from claude2api.config import get_config, get_next_session
 from claude2api.auth import verify_token
-from claude2api.pipeline import ChatRequest, pipeline
-from claude2api.services import parse_and_validate_request
-from claude2api.utils import return_openai_response
+from claude2api.models import (
+    ChatCompletionRequest,
+    OpenAIStreamResponse,
+    StreamChoice,
+    Delta
+)
+from claude2api.pipeline import pipeline
+from claude2api.utils import return_openai_response  # 仍然需要用于非流式响应
 
 # 获取配置实例
 config_instance = get_config()
+
+
+async def parse_and_validate_request(request: Request) -> ChatCompletionRequest:
+    """
+    解析并验证聊天完成请求
+    """
+    # 获取请求体数据
+    try:
+        json_data = await request.json()
+
+        # 使用 pydantic 模型验证并更新请求
+        chat_completion_request = ChatCompletionRequest(**json_data)
+    except Exception as e:
+        logger.error(f"无效的请求格式: {e}")
+        raise HTTPException(status_code=400, detail=f"无效的请求: {str(e)}")
+
+    # 验证是否提供了消息
+    if not chat_completion_request.messages:
+        logger.error("未提供消息")
+        raise HTTPException(status_code=400, detail="未提供消息")
+
+    return chat_completion_request
 
 
 async def health_check_handler(request: Request):
@@ -28,12 +56,8 @@ async def chat_completions_handler(
     request: Request, authorized: bool = Depends(verify_token)
 ):
     """处理聊天完成请求"""
-    # 解析并验证请求，使用 services 中的函数
-    try:
-        chat_request: ChatRequest = await parse_and_validate_request(request)
-    except HTTPException as e:
-        # parse_and_validate_request 已经抛出了 HTTPException，直接返回其 detail
-        return e.detail
+    # 验证请求
+    chat_request: ChatCompletionRequest = await parse_and_validate_request(request)
 
     # 使用重试机制
     success = False  # 标记是否成功处理
@@ -41,72 +65,99 @@ async def chat_completions_handler(
         session = get_next_session()
 
         if not session:
-            logging.error(f"无法获取模型 {chat_request.model} 的会话")
+            logger.error(f"无法获取模型 {chat_request.model} 的会话")
             if i == config_instance.retry_count:  # 如果是最后一次尝试
-                await return_openai_response(
-                    "Error: 在多次尝试后无法获取可用会话", False, request
+                raise HTTPException(
+                    status_code=500, detail="在多次尝试后无法获取可用会话"
                 )
-                return  # 所有尝试失败
-            logging.info("正在尝试另一个会话")
+            logger.info("正在尝试另一个会话")
             continue  # 继续下一次重试
 
-        logging.info(f"使用模型 {chat_request.model} 的会话: {session.session_key}")
+        logger.info(f"使用模型 {chat_request.model} 的会话: {session.session_key}")
 
-        # 执行管道处理
-        try:
-            # 处理请求并生成响应流
-            response_generator = pipeline.execute(chat_request, session)
+        # 处理请求并生成响应流
+        response_generator = pipeline.execute(chat_request, session)
 
-            # 处理响应流并转发给客户端
+        # 如果是流式响应，直接返回StreamingResponse
+        if chat_request.stream:
+
+            async def generate():
+                async for event in response_generator:
+                    # 检查客户端是否断开连接
+                    if await request.is_disconnected():
+                        logger.warning("客户端断开连接")
+                        # 客户端断开，停止生成
+                        break  # 使用 break 退出生成器循环
+
+                    event_type = event.get("type")
+                    event_content = event.get("content", "")
+
+                    if event_type == "error":
+                        logger.error(f"从 Claude 收到错误事件: {event_content}")
+                        # 收到错误，停止当前会话的处理，进入下一次重试
+                        # 这里不直接raise HTTPException，而是让外层循环处理重试
+                        # 可以考虑发送一个错误标记给客户端，或者直接断开流
+                        # 为了简化，这里直接break，依赖外层重试
+                        break
+
+                    elif event_type in ["text", "thinking"]:
+                        # 创建SSE格式的响应
+                        resp = OpenAIStreamResponse(
+                            choices=[
+                                StreamChoice(
+                                    index=0, delta=Delta(content=event_content)
+                                )
+                            ]
+                        )
+                        json_data = resp.model_dump_json()
+                        logger.debug(f"输出流式数据: {json_data}")
+                        yield f"data: {json_data}\n\n"
+
+                    elif event_type == "done":
+                        # 发送结束标记
+                        logger.debug("发送流结束标记 [DONE]")
+                        yield "data: [DONE]\n\n"
+                        success = True  # 标记成功完成
+                        break  # 正常结束循环
+
+                # 如果循环因错误或客户端断开而中断，确保不会标记成功
+                # success 变量在外层循环中判断
+
+            # 直接返回 StreamingResponse
+            return StreamingResponse(
+                generate(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",  # 禁用Nginx等代理的缓冲
+                },
+            )
+        else:
+            # 非流式响应，收集完整文本
+            full_text = ""
             async for event in response_generator:
-                # 检查客户端是否断开连接
-                if await request.is_disconnected():
-                    logging.warning("客户端断开连接")
-                    # 客户端断开，停止处理并返回
-                    return
-
                 event_type = event.get("type")
                 event_content = event.get("content", "")
 
                 if event_type == "error":
-                    logging.error(f"从 Claude 收到错误事件: {event_content}")
-                    # 将错误信息发送给客户端
-                    await return_openai_response(
-                        f"Error: {event_content}", False, request
-                    )
+                    logger.error(f"从 Claude 收到错误事件: {event_content}")
                     success = False  # 标记处理失败
                     break  # 收到错误，停止当前会话的处理，进入下一次重试
 
                 elif event_type in ["text", "thinking"]:
-                    # 将文本或思考内容发送给客户端
-                    await return_openai_response(
-                        event_content, chat_request.stream, request
-                    )
-                    success = True  # 标记至少发送了部分内容
+                    full_text += event_content
 
                 elif event_type == "done":
-                    # 流结束信号
-                    if chat_request.stream:
-                        await return_openai_response(
-                            "[DONE]", chat_request.stream, request
-                        )
                     success = True  # 标记成功完成
                     break  # 正常结束循环
 
             if success:
-                return
+                # 返回完整响应
+                return await return_openai_response(full_text, False, request)
 
-        except Exception as e:
-            # 捕获管道执行过程中的意外异常
-            logging.error(f"管道执行时出现意外异常: {e}")
-            # 尝试向客户端发送错误
-            try:
-                await return_openai_response(
-                    f"Error: 处理请求时发生内部错误: {type(e).__name__}", False, request
-                )
-            except Exception as send_error:
-                logging.error(f"向客户端发送错误信息失败: {send_error}")
-            success = False  # 标记处理失败
-            # 继续下一次重试
+        # 如果当前会话处理失败 (success is False)，外层循环会尝试下一个会话
 
-    logging.error("所有重试都失败")
+    # 所有重试都失败
+    logger.error("所有重试都失败")
+    raise HTTPException(status_code=500, detail="处理请求失败")
