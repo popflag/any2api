@@ -34,3 +34,8 @@ app.post("/v1/chat/completions", dependencies=[Depends(verify_token)])(chat_comp
 
 # 设置日志级别（可选）
 logging.basicConfig(level=logging.INFO)
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app)
