@@ -62,7 +62,7 @@ class ClaudeConfig(BaseModel):
         """设置指定会话的组织ID"""
         for i, session in enumerate(self.sessions):
             if session.session_key == session_key:
-                print(f"设置会话 {session_key} 的组织ID为 {org_id}")
+                print(f"Setting OrgID for session {session_key} to {org_id}")
                 self.sessions[i].org_id = org_id
                 return
 

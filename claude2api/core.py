@@ -1,6 +1,7 @@
 import logging
 import json
 import uuid
+import base64  # 导入 base64 模块
 from typing import List, Dict, Any, Optional
 from fastapi import Request
 from curl_cffi.requests import AsyncSession
@@ -394,9 +395,91 @@ class ClaudeClient:
 
         Args:
             file_data: 文件数据列表，格式为: data:image/jpeg;base64,/9j/4AA...
+
+        Raises:
+            Exception: 当组织ID未设置、文件数据为空、数据格式无效或上传失败时抛出
         """
-        # TODO
-        pass
+        if not self.org_id:
+            raise Exception("未设置组织 ID")
+
+        if not file_data:
+            raise Exception("文件数据为空")
+
+        # 确保files数组已初始化
+        if "files" not in self.request_attrs:
+            self.request_attrs["files"] = []
+
+        # 处理每个文件
+        for fd in file_data:
+            if not fd:
+                continue  # 跳过空条目
+
+            # 解析base64数据
+            parts = fd.split(",", 1)
+            if len(parts) != 2:
+                raise Exception("文件数据格式无效")
+
+            # 从数据URI获取内容类型
+            meta_parts = parts[0].split(":", 1)
+            if len(meta_parts) != 2:
+                raise Exception("文件数据中的内容类型无效")
+
+            meta_info = meta_parts[1].split(";", 1)
+            if len(meta_info) != 2 or meta_info[1] != "base64":
+                raise Exception("文件数据中的编码无效")
+
+            content_type = meta_info[0]
+
+            # 解码base64数据
+            try:
+                file_bytes = base64.b64decode(parts[1])
+            except Exception as e:
+                raise Exception(f"解码base64数据失败: {e}")
+
+            # 根据内容类型确定文件名
+            filename = "file"
+            if content_type == "image/jpeg":
+                filename = "image.jpg"
+            elif content_type == "image/png":
+                filename = "image.png"
+            elif content_type == "application/pdf":
+                filename = "document.pdf"
+            # 可以根据需要添加更多文件类型
+
+            # 创建上传URL
+            url = f"{self.BASE_URL}/organizations/{self.org_id}/upload"
+
+            try:
+                # 创建multipart/form-data请求
+                form_data = {"file": (filename, file_bytes, content_type)}
+
+                response: curl_Response = await self.session.post(
+                    url,
+                    files=form_data,
+                    headers={
+                        "referer": "https://claude.ai/new",
+                        "anthropic-client-platform": "web_claude_ai",
+                    },
+                )
+
+                if response.status_code != 200:
+                    raise Exception(
+                        f"上传失败，状态码: {response.status_code}，响应: {response.text}"
+                    )
+
+                # 解析响应
+                result: dict = response.json()
+                file_uuid: str = result.get("file_uuid", "")
+
+                if not file_uuid:
+                    raise Exception("响应中未找到文件UUID")
+
+                # 将文件添加到默认属性
+                self.request_attrs["files"].append(file_uuid)  # type: ignore
+
+            except Exception as e:
+                logging.error(f"上传文件失败: {e}")
+                raise
 
     def set_big_context(self, context: str) -> None:
         """设置大型上下文
