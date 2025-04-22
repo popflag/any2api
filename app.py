@@ -30,7 +30,7 @@ app.add_middleware(
 app.get("/health")(health_check_handler)
 # /v1/models 路由需要验证 token
 app.get("/v1/models", dependencies=[Depends(verify_token)])(modules_handler)
-app.post("/v1/chat/completions")(chat_completions_handler)
+app.post("/v1/chat/completions", dependencies=[Depends(verify_token)])(chat_completions_handler)
 
 # 设置日志级别（可选）
 logging.basicConfig(level=logging.INFO)
