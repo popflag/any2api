@@ -183,14 +183,14 @@ class ClaudeClient:
             request_body["model"] = model[:-6]  # 移除 "-think" 后缀
 
         try:
-            response = await self.session.post(
+            response: curl_Response = await self.session.post(
                 url, json=request_body, headers={"referer": "https://claude.ai/new"}
             )
 
             if response.status_code != 201:
                 raise Exception(f"创建会话失败，状态码: {response.status_code}")
 
-            result = response.json()
+            result: dict = response.json()
             conversation_id = result.get("uuid")
 
             if not conversation_id:

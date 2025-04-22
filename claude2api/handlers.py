@@ -66,9 +66,7 @@ async def chat_completions_handler(
             request, session, model, processor, req.stream
         )
         if success:
-            # 这里应该根据实际情况返回响应
-            # 假设 handle_chat_request 在内部使用了 return_openai_response
-            return  # return_openai_response is called inside handle_chat_request
+            return
 
         # 如果到这里，请求失败 - 使用另一个会话重试
         logging.info("正在尝试另一个会话")
