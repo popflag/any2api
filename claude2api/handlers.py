@@ -38,7 +38,7 @@ async def chat_completions_handler(
         return e.detail
 
     # 获取模型名称
-    model = req.model  # 现在这是一个固定的字段，不需要检查是否存在
+    model = req.model
 
     # 获取配置实例
     config_instance = get_config()
