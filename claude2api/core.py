@@ -257,7 +257,9 @@ class ClaudeClient:
             logging.error(f"发送消息失败: {e}")
             raise
 
-    async def _handle_response(self, response, stream: bool, request: Request) -> None:
+    async def _handle_response(
+        self, response: curl_Response, stream: bool, request: Request
+    ) -> None:
         """处理 Claude 的 SSE 响应
 
         Args:
@@ -276,6 +278,10 @@ class ClaudeClient:
             if await request.is_disconnected():
                 logging.info("客户端已断开连接")
                 return
+
+            # 确保line是字符串类型
+            if isinstance(line, bytes):
+                line = line.decode("utf-8")
 
             if not line.startswith("data: "):
                 continue
@@ -322,8 +328,7 @@ class ClaudeClient:
         if not stream:
             await return_openai_response(res_all_text, stream, request)
         else:
-            await response.write(b"data: [DONE]\n\n")
-            await response.flush()
+            await return_openai_response("[DONE]", stream, request)
 
     def _is_error_event(self, event: Dict[str, Any]) -> bool:
         """检查是否为错误事件

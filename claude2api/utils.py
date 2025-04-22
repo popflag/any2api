@@ -21,6 +21,15 @@ async def return_openai_response(text: str, stream: bool, request: Request):
 
 async def stream_response(text: str, request: Request):
     """生成流式响应"""
+    async def generate():
+        yield formatted_data
+    
+    # 检查是否为结束标记
+    if text == "[DONE]":
+        async def generate():
+            yield "data: [DONE]\n\n"
+        return StreamingResponse(generate(), media_type="text/event-stream")
+
     # 创建流式响应对象
     resp = OpenAIStreamResponse(
         choices=[StreamChoice(index=0, delta=Delta(content=text))]
@@ -31,9 +40,6 @@ async def stream_response(text: str, request: Request):
 
     # 添加 SSE 格式
     formatted_data = f"data: {json_data}\n\n"
-
-    async def generate():
-        yield formatted_data
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
