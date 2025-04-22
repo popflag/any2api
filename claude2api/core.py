@@ -1,9 +1,11 @@
 import logging
 import json
 import uuid
-import base64  # 导入 base64 模块
-from typing import List, Dict, Any, Optional
-from fastapi import Request
+import base64
+from typing import List, Dict, Any, Optional, AsyncGenerator  # 导入 AsyncGenerator
+
+# 移除 FastAPI Request 导入
+# from fastapi import Request
 from curl_cffi.requests import AsyncSession
 from curl_cffi.requests.models import Response as curl_Response
 from pydantic import BaseModel
@@ -203,23 +205,25 @@ class ClaudeClient:
             raise
 
     async def send_message(
-        self, conversation_id: str, message: str, stream: bool, request: Request
-    ) -> int:
-        """发送消息到会话
+        self, conversation_id: str, message: str, stream: bool
+    ) -> AsyncGenerator[Dict[str, Any], None]:  # 修改签名和返回类型
+        """发送消息到会话并产生事件流
 
         Args:
             conversation_id: 会话 ID
             message: 消息内容
             stream: 是否流式响应
-            request: FastAPI 请求对象
 
-        Returns:
-            int: 状态码
+        Yields:
+            Dict[str, Any]: 包含事件类型和内容的字典
+                - type: "text", "thinking", "error", "done"
+                - content: 事件的具体内容 (文本、错误消息等)
 
         Raises:
-            Exception: 未设置组织 ID 或发送失败时抛出
+            Exception: 未设置组织 ID 时抛出
         """
         if not self.org_id:
+            # 直接抛出异常，因为这是客户端配置问题，不是流中的事件
             raise Exception("未设置组织 ID")
 
         url = f"{self.BASE_URL}/organizations/{self.org_id}/chat_conversations/{conversation_id}/completion"
@@ -238,132 +242,157 @@ class ClaudeClient:
                     "anthropic-client-platform": "web_claude_ai",
                     "cache-control": "no-cache",
                 },
-                stream=True,
+                stream=True,  # 必须为 True 以便 aiter_lines 工作
             )
 
             logging.info(f"Claude 响应状态码: {response.status_code}")
 
+            # 在开始流式处理前检查初始状态码
             if response.status_code == 429:
-                return 429
-
-            if response.status_code != 200:
-                return response.status_code
+                yield {"type": "error", "content": "Rate limit exceeded"}
+                return  # 停止生成器
+            elif response.status_code != 200:
+                # 尝试读取错误信息（如果可能）
+                error_content = f"发送消息失败，状态码: {response.status_code}"
+                try:
+                    error_body = await response.text()
+                    # 避免将整个响应体放入错误信息，只取前几百个字符
+                    error_content += f", 响应: {error_body[:500]}{'...' if len(error_body) > 500 else ''}"
+                except Exception:
+                    pass  # 忽略读取响应体的错误
+                yield {"type": "error", "content": error_content}
+                return  # 停止生成器
 
             # 处理流式响应
-            await self._handle_response(response, stream, request)
-            return 200
+            # 使用 async for 迭代 _handle_response 生成器并 yield 其结果
+            async for event in self._handle_response(response, stream):
+                yield event
+            # 移除 return 200
 
         except Exception as e:
             logging.error(f"发送消息失败: {e}")
-            raise
+            # 捕获发送请求本身的异常，并 yield 一个错误事件
+            yield {"type": "error", "content": f"发送消息时发生网络或内部错误: {e}"}
+            # 不再 raise e，让调用方处理生成器结束
 
     async def _handle_response(
-        self, response: curl_Response, stream: bool, request: Request
-    ) -> None:
-        """处理 Claude 的 SSE 响应
+        self, response: curl_Response, stream: bool
+    ) -> AsyncGenerator[Dict[str, Any], None]:  # 修改签名和返回类型
+        """处理 Claude 的 SSE 响应，并产生事件流
 
         Args:
             response: curl_cffi 响应对象
             stream: 是否流式响应
-            request: FastAPI 请求对象
-        """
-        from claude2api.utils import return_openai_response
 
-        # 跟踪完整响应和思考状态
-        thinking_shown = False
+        Yields:
+            Dict[str, Any]: 包含事件类型和内容的字典
+                - type: "text", "thinking", "error", "done"
+                - content: 事件的具体内容 (文本、错误消息等)
+        """
+        # 移除对 return_openai_response 的依赖
+        # from claude2api.utils import return_openai_response # 删除此行
+
+        # 跟踪完整响应文本（用于非流式模式）
         res_all_text = ""
+        # 跟踪思考状态，用于在文本块前添加/移除 <think> 标签
+        # 注意：这里的 <think> 标签处理逻辑是模拟，实际 Claude API 可能有变化
+        # 简化处理：只传递思考内容，由调用方决定如何呈现
+        # thinking_shown = False # 移除此行，简化处理
 
         async for line in response.aiter_lines():
-            # 检查客户端是否已断开连接
-            if await request.is_disconnected():
-                logging.info("客户端已断开连接")
-                return
+            # 移除 request.is_disconnected() 检查
 
             # 确保line是字符串类型
             if isinstance(line, bytes):
                 line = line.decode("utf-8")
 
+            # 忽略非数据行
             if not line.startswith("data: "):
                 continue
 
             data = line[6:]
+            # 忽略空的 data 行
+            if not data:
+                continue
+
             try:
                 event = json.loads(data)
 
                 # 处理错误事件
                 if self._is_error_event(event):
                     error_message = event["error"]["message"]
-                    await return_openai_response(error_message, stream, request)
-                    return
+                    # 移除调用 return_openai_response
+                    yield {"type": "error", "content": error_message}  # Yield 错误事件
+                    return  # 发生错误后停止处理
 
                 # 处理文本增量
                 if self._is_text_delta(event):
                     res_text = event["delta"]["text"]
-                    if thinking_shown:
-                        res_text = "</think>\n" + res_text
-                        thinking_shown = False
+                    # 移除 thinking_shown 逻辑
+                    # if thinking_shown:
+                    #     res_text = "</think>\n" + res_text
+                    #     thinking_shown = False
 
                     res_all_text += res_text
                     if stream:
-                        await return_openai_response(res_text, stream, request)
+                        # 移除调用 return_openai_response
+                        yield {"type": "text", "content": res_text}  # Yield 文本事件
                     continue
 
                 # 处理思考增量
                 if self._is_thinking_delta(event):
                     res_text = event["delta"]["THINKING"]
-                    if not thinking_shown:
-                        res_text = "<think>" + res_text
-                        thinking_shown = True
+                    # 移除 thinking_shown 逻辑
+                    # if not thinking_shown:
+                    #     res_text = "<think>" + res_text
+                    #     thinking_shown = True
 
                     res_all_text += res_text
                     if stream:
-                        await return_openai_response(res_text, stream, request)
+                        # 移除调用 return_openai_response
+                        yield {
+                            "type": "thinking",
+                            "content": res_text,
+                        }  # Yield 思考事件
                     continue
+
+                # 处理其他可能的事件类型，例如 completion
+                if event.get("type") == "completion":
+                    # 这是一个结束事件，但我们使用自定义的 "done" 事件来标记流的结束
+                    pass  # 忽略 Claude 的 completion 事件，等待流结束
 
             except json.JSONDecodeError:
                 logging.warning(f"解析 SSE 事件失败: {data}")
-                continue
+                # 可以选择 yield 一个解析错误事件
+                # yield {"type": "error", "content": f"解析 SSE 事件失败: {data}"}
+                continue  # 继续处理下一行
 
         # 处理非流式响应或发送结束标记
         if not stream:
-            await return_openai_response(res_all_text, stream, request)
-        else:
-            await return_openai_response("[DONE]", stream, request)
+            # 移除调用 return_openai_response
+            yield {"type": "text", "content": res_all_text}  # Yield 完整文本
+        # 移除 else 分支和 [DONE] 的调用
+        # 由调用方在生成器结束后发送 [DONE]
+        yield {"type": "done"}  # Yield 完成事件
 
     def _is_error_event(self, event: Dict[str, Any]) -> bool:
-        """检查是否为错误事件
-
-        Args:
-            event: 事件数据
-
-        Returns:
-            bool: 是否为错误事件
-        """
-        return event.get("type") == "error" and event.get("error", {}).get("message")
+        """检查是否为错误事件"""
+        return (
+            event.get("type") == "error"
+            and event.get("error", {}).get("message") is not None
+        )
 
     def _is_text_delta(self, event: Dict[str, Any]) -> bool:
-        """检查是否为文本增量事件
-
-        Args:
-            event: 事件数据
-
-        Returns:
-            bool: 是否为文本增量事件
-        """
+        """检查是否为文本增量事件"""
         delta = event.get("delta", {})
-        return delta.get("type") == "text_delta" and delta.get("text")
+        return delta.get("type") == "text_delta" and delta.get("text") is not None
 
     def _is_thinking_delta(self, event: Dict[str, Any]) -> bool:
-        """检查是否为思考增量事件
-
-        Args:
-            event: 事件数据
-
-        Returns:
-            bool: 是否为思考增量事件
-        """
+        """检查是否为思考增量事件"""
         delta = event.get("delta", {})
-        return delta.get("type") == "thinking_delta" and delta.get("THINKING")
+        return (
+            delta.get("type") == "thinking_delta" and delta.get("THINKING") is not None
+        )
 
     async def delete_conversation(self, conversation_id: str) -> None:
         """删除会话
@@ -389,7 +418,11 @@ class ClaudeClient:
             )
 
             if response.status_code not in (200, 204):
-                raise Exception(f"删除会话失败，状态码: {response.status_code}")
+                # 尝试读取错误信息
+                error_text = await response.text()
+                raise Exception(
+                    f"删除会话失败，状态码: {response.status_code}, 响应: {error_text}"
+                )
 
         except Exception as e:
             logging.error(f"删除会话失败: {e}")
@@ -408,7 +441,9 @@ class ClaudeClient:
             raise Exception("未设置组织 ID")
 
         if not file_data:
-            raise Exception("文件数据为空")
+            # 文件数据为空不应抛出异常，只是没有文件需要上传
+            logging.info("没有文件数据需要上传")
+            return
 
         # 确保files数组已初始化
         if "files" not in self.request_attrs:
@@ -422,16 +457,16 @@ class ClaudeClient:
             # 解析base64数据
             parts = fd.split(",", 1)
             if len(parts) != 2:
-                raise Exception("文件数据格式无效")
+                raise Exception(f"文件数据格式无效: {fd[:50]}...")  # 避免打印整个数据
 
             # 从数据URI获取内容类型
             meta_parts = parts[0].split(":", 1)
             if len(meta_parts) != 2:
-                raise Exception("文件数据中的内容类型无效")
+                raise Exception(f"文件数据中的内容类型无效: {parts[0]}")
 
             meta_info = meta_parts[1].split(";", 1)
             if len(meta_info) != 2 or meta_info[1] != "base64":
-                raise Exception("文件数据中的编码无效")
+                raise Exception(f"文件数据中的编码无效: {meta_parts[1]}")
 
             content_type = meta_info[0]
 
@@ -480,7 +515,15 @@ class ClaudeClient:
                     raise Exception("响应中未找到文件UUID")
 
                 # 将文件添加到默认属性
+                # 确保 self.request_attrs["files"] 是列表
+                if "files" not in self.request_attrs or not isinstance(
+                    self.request_attrs["files"], list
+                ):
+                    self.request_attrs["files"] = []
                 self.request_attrs["files"].append(file_uuid)  # type: ignore
+                logging.info(
+                    f"文件 {filename} ({content_type}) 上传成功，UUID: {file_uuid}"
+                )
 
             except Exception as e:
                 logging.error(f"上传文件失败: {e}")
@@ -492,14 +535,21 @@ class ClaudeClient:
         Args:
             context: 上下文内容
         """
-        self.request_attrs["attachments"] = [
+        # 确保 attachments 数组已初始化
+        if "attachments" not in self.request_attrs or not isinstance(
+            self.request_attrs["attachments"], list
+        ):
+            self.request_attrs["attachments"] = []
+
+        self.request_attrs["attachments"].append(  # type: ignore
             {
                 "file_name": "context.txt",
                 "file_type": "text/plain",
                 "file_size": len(context),
                 "extracted_content": context,
             }
-        ]
+        )
+        logging.info("大型上下文已添加到请求属性中")
 
 
 async def new_client(session_key: str, proxy: str = "") -> ClaudeClient:
