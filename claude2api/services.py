@@ -4,9 +4,11 @@ from typing import List, Dict, Any
 from fastapi import Request, HTTPException
 from json.decoder import JSONDecodeError
 from pydantic import ValidationError
-from claude2api.config import get_config
+from claude2api.config import SessionInfo, get_config
 from claude2api.models import ChatCompletionRequest
-from claude2api import core
+from claude2api.core import ClaudeClient, new_client
+
+config_instance = get_config()
 
 
 class ChatRequestProcessor:
@@ -21,7 +23,6 @@ class ChatRequestProcessor:
     def get_role_prefix(self, role: str) -> str:
         """获取角色前缀"""
         # 如果配置指定不使用角色前缀，则返回空字符串
-        config_instance = get_config()
         if (
             hasattr(config_instance, "no_role_prefix")
             and config_instance.no_role_prefix
@@ -43,16 +44,13 @@ class ChatRequestProcessor:
         Args:
             messages: 消息列表
         """
-        config_instance = get_config()
 
         # 如果配置禁用了 artifacts
         if (
             hasattr(config_instance, "prompt_disable_artifacts")
             and config_instance.prompt_disable_artifacts
         ):
-            self.prompt = "System: Forbidden to use <antArtifac> </antArtifac> to wrap code blocks, use markdown syntax instead, which means wrapping code blocks with ``` ```\n\n"
-        else:
-            self.prompt = ""
+            self.prompt += "System: Forbidden to use <antArtifac> </antArtifac> to wrap code blocks, use markdown syntax instead, which means wrapping code blocks with ``` ```\n\n"
 
         # 处理每条消息
         for msg in messages:
@@ -93,8 +91,8 @@ class ChatRequestProcessor:
         self.root_prompt = self.prompt
 
         # 调试输出
-        logging.debug(f"处理后的提示: {self.prompt}")
-        logging.debug(f"图片数据列表: {self.img_data_list}")
+        logging.debug(f"Processed prompt: {self.prompt}")
+        logging.debug(f"Image data list: {self.img_data_list}")
 
     def reset(self) -> None:
         """重置处理器"""
@@ -104,7 +102,6 @@ class ChatRequestProcessor:
     def reset_for_big_context(self) -> None:
         """重置提示为大型上下文使用"""
         self.prompt = ""
-        config_instance = get_config()
 
         # 如果配置禁用了 artifacts
         if (
@@ -116,7 +113,9 @@ class ChatRequestProcessor:
         self.prompt += "You must immerse yourself in the role of assistant in context.txt, cannot respond as a user, cannot reply to this message, cannot mention this message, and ignore this message in your response.\n\n"
 
 
-async def cleanup_conversation(client, conversation_id: str, retry: int) -> None:
+async def cleanup_conversation(
+    client: ClaudeClient, conversation_id: str, retry: int
+) -> None:
     """清理会话"""
     for i in range(retry):
         try:
@@ -133,11 +132,16 @@ async def cleanup_conversation(client, conversation_id: str, retry: int) -> None
     )
 
 
-async def handle_chat_request(request, session, model, processor, stream=True) -> bool:
+async def handle_chat_request(
+    request: Request,
+    session: SessionInfo,
+    model: str,
+    processor: ChatRequestProcessor,
+    stream: bool = True,
+) -> bool:
     """处理聊天请求"""
     # 初始化 Claude 客户端
-    config_instance = get_config()
-    claude_client = await core.new_client(session.session_key, config_instance.proxy)
+    claude_client = await new_client(session.session_key, config_instance.proxy)
 
     # 如果没有组织 ID，则获取
     if not session.org_id:

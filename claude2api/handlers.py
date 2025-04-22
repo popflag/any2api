@@ -8,6 +8,8 @@ from claude2api.services import (
     handle_chat_request,
 )
 
+# 获取配置实例
+config_instance = get_config()
 
 # 初始化请求处理器实例
 processor = ChatRequestProcessor()
@@ -39,9 +41,6 @@ async def chat_completions_handler(
 
     # 获取模型名称
     model = req.model
-
-    # 获取配置实例
-    config_instance = get_config()
 
     # 使用重试机制
     for i in range(config_instance.retry_count + 1):  # +1 是为了确保至少尝试一次

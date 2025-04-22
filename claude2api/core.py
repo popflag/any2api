@@ -1,9 +1,20 @@
 import logging
 import json
 import uuid
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from fastapi import Request
 from curl_cffi.requests import AsyncSession
+from curl_cffi.requests.models import Response as curl_Response
+from pydantic import BaseModel
+
+
+class Organization(BaseModel):
+    """组织信息模型"""
+
+    id: int
+    uuid: str
+    name: str
+    rate_limit_tier: str
 
 
 class ClaudeClient:
@@ -93,26 +104,38 @@ class ClaudeClient:
         url = f"{self.BASE_URL}/organizations"
 
         try:
-            response = await self.session.get(
+            response: curl_Response = await self.session.get(
                 url, headers={"referer": "https://claude.ai/new"}
             )
 
             if response.status_code != 200:
                 raise Exception(f"获取组织 ID 失败，状态码: {response.status_code}")
 
-            orgs = response.json()
+            # 解析为具有明确结构的组织列表
+            orgs_data: List[Dict[str, Any]] = response.json()
 
-            if not orgs:
+            if not orgs_data:
                 raise Exception("未找到组织")
+
+            # 转换为Organization对象列表
+            orgs: List[Organization] = [
+                Organization(
+                    id=org.get("id", 0),
+                    uuid=org.get("uuid", ""),
+                    name=org.get("name", ""),
+                    rate_limit_tier=org.get("rate_limit_tier", ""),
+                )
+                for org in orgs_data
+            ]
 
             # 优先使用单一组织或默认组织
             if len(orgs) == 1:
-                return orgs[0]["uuid"]
+                return orgs[0].uuid
 
             # 查找默认组织
             for org in orgs:
-                if org.get("rate_limit_tier") == "default_claude_ai":
-                    return org["uuid"]
+                if org.rate_limit_tier == "default_claude_ai":
+                    return org.uuid
 
             raise Exception("未找到默认组织")
 
