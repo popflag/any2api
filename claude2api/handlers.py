@@ -6,11 +6,14 @@ from claude2api.auth import verify_token
 from claude2api.models import (
     ChatCompletionRequest,
     OpenAIStreamResponse,
+    OpenAIResponse,
     StreamChoice,
-    Delta
+    NoStreamChoice,
+    Message,
+    Usage,
+    Delta,
 )
 from claude2api.pipeline import pipeline
-from claude2api.utils import return_openai_response  # 仍然需要用于非流式响应
 
 # 获取配置实例
 config_instance = get_config()
@@ -105,7 +108,8 @@ async def chat_completions_handler(
                         resp = OpenAIStreamResponse(
                             choices=[
                                 StreamChoice(
-                                    index=0, delta=Delta(content=event_content)
+                                    index=0,
+                                    delta=Delta(content=event_content),
                                 )
                             ]
                         )
@@ -117,8 +121,7 @@ async def chat_completions_handler(
                         # 发送结束标记
                         logger.debug("发送流结束标记 [DONE]")
                         yield "data: [DONE]\n\n"
-                        success = True  # 标记成功完成
-                        break  # 正常结束循环
+                        break
 
                 # 如果循环因错误或客户端断开而中断，确保不会标记成功
                 # success 变量在外层循环中判断
@@ -153,8 +156,25 @@ async def chat_completions_handler(
                     break  # 正常结束循环
 
             if success:
-                # 返回完整响应
-                return await return_openai_response(full_text, False, request)
+                # 返回完整响应，创建OpenAI格式的响应
+                response = OpenAIResponse(
+                    model=chat_request.model,
+                    choices=[
+                        NoStreamChoice(
+                            index=0,
+                            message=Message(role="assistant", content=full_text),
+                            finish_reason="stop",
+                        )
+                    ],
+                    usage=Usage(
+                        prompt_tokens=0,  # 这里可以添加实际的token计数，如果有的话
+                        completion_tokens=0,
+                        total_tokens=0,
+                    ),
+                )
+
+                logger.debug(f"返回非流式响应: {response.model_dump_json()}")
+                return response
 
         # 如果当前会话处理失败 (success is False)，外层循环会尝试下一个会话
 
