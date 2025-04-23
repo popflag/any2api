@@ -1,3 +1,4 @@
+from loguru import logger
 import yaml
 import threading
 from pathlib import Path
@@ -158,10 +159,11 @@ class Config:
         print(f"无角色前缀: {self.config_model.no_role_prefix}")
         print(f"提示词禁用artifacts: {self.config_model.prompt_disable_artifacts}")
 
-    def get_next_session(self) -> Optional[SessionInfo]:
+    def get_next_session(self) -> SessionInfo:
         """获取下一个会话信息"""
         if not self.config_model or not self.config_model.sessions:
-            return None
+            logger.error("config session 字段错误")
+            raise ValueError("config session 字段错误")
 
         idx = self.session_range.next_index(len(self.config_model.sessions))
         return self.config_model.get_session_for_model(idx)
@@ -178,7 +180,7 @@ def get_config() -> ClaudeConfig:
     return Config().claude_config
 
 
-def get_next_session() -> Optional[SessionInfo]:
+def get_next_session() -> SessionInfo:
     """获取下一个会话信息"""
     return Config().get_next_session()
 

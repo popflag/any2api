@@ -39,9 +39,6 @@ class ClaudePipeline:
         prompt = self.message_processor.get_prompt()
         image_data = self.message_processor.get_image_data()
 
-        # 保存原始提示以便上下文管理
-        self.context_manager.set_original_prompt(prompt)
-
         # 初始化变量
         conversation_id = None
         client = None
