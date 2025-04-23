@@ -2,10 +2,7 @@ from loguru import logger
 import json
 import uuid
 import base64
-from typing import List, Dict, Any, AsyncGenerator  # 导入 AsyncGenerator
-
-# 移除 FastAPI Request 导入
-# from fastapi import Request
+from typing import List, Dict, Any, AsyncGenerator
 from curl_cffi.requests import AsyncSession
 from curl_cffi.requests.models import Response as curl_Response
 from pydantic import BaseModel
@@ -21,9 +18,9 @@ class Organization(BaseModel):
 
 
 class ClaudeClient:
-    """Claude API 客户端，使用 curl_cffi 实现浏览器指纹模拟"""
+    """Claude API 客户端，负责与 Claude AI 服务进行通信"""
 
-    # 默认 API 配置
+    # Claude API 配置
     BASE_URL = "https://claude.ai/api"
     DEFAULT_HEADERS = {
         "accept": "text/event-stream, text/event-stream",
@@ -63,7 +60,7 @@ class ClaudeClient:
     }
 
     def __init__(self, session_key: str, proxy: str = ""):
-        """初始化客户端
+        """初始化 Claude 客户端
 
         Args:
             session_key: Claude 会话密钥
@@ -206,7 +203,7 @@ class ClaudeClient:
 
     async def send_message(
         self, conversation_id: str, message: str, stream: bool
-    ) -> AsyncGenerator[Dict[str, Any], None]:  # 修改签名和返回类型
+    ) -> AsyncGenerator[Dict[str, Any], None]:
         """发送消息到会话并产生事件流
 
         Args:
@@ -253,7 +250,7 @@ class ClaudeClient:
 
     async def _handle_response(
         self, response: curl_Response, stream: bool
-    ) -> AsyncGenerator[Dict[str, Any], None]:  # 修改签名和返回类型
+    ) -> AsyncGenerator[Dict[str, Any], None]:
         """处理 Claude 的 SSE 响应，并产生事件流
 
         Args:
@@ -269,8 +266,6 @@ class ClaudeClient:
         res_all_text = ""
 
         async for line in response.aiter_lines():
-            # 移除 request.is_disconnected() 检查
-
             # 确保line是字符串类型
             if isinstance(line, bytes):
                 line = line.decode("utf-8")
@@ -290,7 +285,6 @@ class ClaudeClient:
                 # 处理错误事件
                 if self._is_error_event(event):
                     error_message = event["error"]["message"]
-                    # 移除调用 return_openai_response
                     yield {"type": "error", "content": error_message}  # Yield 错误事件
                     return  # 发生错误后停止处理
 
@@ -300,21 +294,15 @@ class ClaudeClient:
 
                     res_all_text += res_text
                     if stream:
-                        # 移除调用 return_openai_response
                         yield {"type": "text", "content": res_text}  # Yield 文本事件
                     continue
 
                 # 处理思考增量
                 if self._is_thinking_delta(event):
                     res_text = event["delta"]["THINKING"]
-                    # 移除 thinking_shown 逻辑
-                    # if not thinking_shown:
-                    #     res_text = "<think>" + res_text
-                    #     thinking_shown = True
 
                     res_all_text += res_text
                     if stream:
-                        # 移除调用 return_openai_response
                         yield {
                             "type": "thinking",
                             "content": res_text,
@@ -328,16 +316,11 @@ class ClaudeClient:
 
             except json.JSONDecodeError:
                 logger.warning(f"解析 SSE 事件失败: {data}")
-                # 可以选择 yield 一个解析错误事件
-                # yield {"type": "error", "content": f"解析 SSE 事件失败: {data}"}
                 continue  # 继续处理下一行
 
         # 处理非流式响应或发送结束标记
         if not stream:
-            # 移除调用 return_openai_response
             yield {"type": "text", "content": res_all_text}  # Yield 完整文本
-        # 移除 else 分支和 [DONE] 的调用
-        # 由调用方在生成器结束后发送 [DONE]
         yield {"type": "done"}  # Yield 完成事件
 
     def _is_error_event(self, event: Dict[str, Any]) -> bool:

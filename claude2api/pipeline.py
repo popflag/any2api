@@ -3,7 +3,7 @@ import asyncio
 from typing import Dict, Any, AsyncGenerator, List
 from pydantic import BaseModel
 
-from claude2api.core import ClaudeClient, new_client
+from claude2api.claude_client import ClaudeClient, new_client
 from claude2api.config import SessionInfo, get_config
 from claude2api.models import ChatCompletionRequest
 
@@ -18,7 +18,7 @@ class ChatMessage(BaseModel):
 
 
 class ChatPipeline:
-    """Claude API 请求处理管道，负责处理聊天请求并生成响应"""
+    """聊天处理管道，负责处理用户请求并通过 Claude API 生成响应"""
 
     def __init__(self):
         """初始化处理管道"""
