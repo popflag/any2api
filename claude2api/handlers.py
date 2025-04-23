@@ -13,7 +13,7 @@ from claude2api.models import (
     Usage,
     Delta,
 )
-from claude2api.pipeline import pipeline
+from claude2api.claude_pipeline import claude_pipeline
 
 # 获取配置实例
 config_instance = get_config()
@@ -79,7 +79,7 @@ async def chat_completions_handler(
         logger.info(f"使用模型 {chat_request.model} 的会话: {session.session_key}")
 
         # 处理请求并生成响应流
-        response_generator = pipeline.execute(chat_request, session)
+        response_generator = claude_pipeline.pipline(chat_request, session)
 
         # 如果是流式响应，直接返回StreamingResponse
         if chat_request.stream:
