@@ -8,6 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+config.yaml
 uv.lock
 .aider*
 CONVENTIONS.md
