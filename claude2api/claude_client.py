@@ -434,33 +434,77 @@ class ClaudeClient:
                 filename = "document.pdf"
             # 可以根据需要添加更多文件类型
 
-            # 创建上传URL
-            url = f"{self.BASE_URL}/organizations/{self.org_id}/upload"
+            # 创建上传URL - 注意这里修改了URL格式以匹配Golang实现
+            url = f"{self.BASE_URL}/{self.org_id}/upload"
+            logger.debug(f"上传URL: {url}")
 
             try:
-                # 创建multipart/form-data请求
-                form_data = {"file": (filename, file_bytes, content_type)}
+                # 使用curl_cffi的CurlMime创建multipart/form-data请求
+                from curl_cffi import CurlMime
 
-                response: curl_Response = await self.session.post(
-                    url,
-                    files=form_data,
-                    headers={
-                        "referer": "https://claude.ai/new",
-                        "anthropic-client-platform": "web_claude_ai",
-                    },
+                logger.debug(
+                    f"准备上传文件: {filename}, 类型: {content_type}, 大小: {len(file_bytes)} 字节"
                 )
 
+                # 创建multipart表单
+                mp = CurlMime()
+                mp.addpart(
+                    name="file",
+                    content_type=content_type,
+                    filename=filename,
+                    data=file_bytes,
+                )
+
+                # 准备请求头
+                headers = {
+                    "referer": "https://claude.ai/new",
+                    "anthropic-client-platform": "web_claude_ai",
+                    "content-type": "multipart/form-data",  # fix upload file error bug
+                }
+
+                logger.debug(f"发送上传请求到: {url}")
+
+                # 发送请求
+                response: curl_Response = await self.session.post(
+                    url,
+                    multipart=mp,  # 使用multipart参数而不是files
+                    headers=headers,
+                )
+
+                # 关闭multipart表单以释放资源
+                mp.close()
+
+                logger.debug(f"收到响应，状态码: {response.status_code}")
+
+                # 处理非200响应
                 if response.status_code != 200:
+                    try:
+                        error_data = response.json()
+                        error_text = f"错误消息: {error_data}"
+                    except Exception:
+                        error_text = (
+                            response.text if hasattr(response, "text") else "无响应内容"
+                        )
+
+                    logger.error(
+                        f"上传失败，状态码: {response.status_code}，响应: {error_text}"
+                    )
                     raise Exception(
-                        f"上传失败，状态码: {response.status_code}，响应: {response.text}"
+                        f"上传失败，状态码: {response.status_code}，响应: {error_text}"
                     )
 
                 # 解析响应
-                result: dict = response.json()
-                file_uuid: str = result.get("file_uuid", "")
+                try:
+                    result: dict = response.json()
+                    logger.debug(f"响应数据: {result}")
+                    file_uuid: str = result.get("file_uuid", "")
 
-                if not file_uuid:
-                    raise Exception("响应中未找到文件UUID")
+                    if not file_uuid:
+                        logger.error("响应中未找到文件UUID")
+                        raise Exception("响应中未找到文件UUID")
+                except Exception as e:
+                    logger.error(f"解析响应失败: {e}")
+                    raise Exception(f"解析响应失败: {e}")
 
                 # 将文件添加到默认属性
                 # 确保 self.request_attrs["files"] 是列表
