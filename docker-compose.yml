@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  claude2api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: claude2api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./config.yaml:/app/config.yaml
+      - ./logs:/app/logs
+    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1

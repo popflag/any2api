@@ -6,7 +6,7 @@ sessions:
     org_id: ""
 
 # Server address
-address: "0.0.0.0:8080"
+address: "0.0.0.0:8000"
 
 # API authentication key
 api_key: "123"

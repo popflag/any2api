@@ -1,0 +1,39 @@
+# 版本控制
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.mypy_cache/
+.ruff_cache/
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 日志
+logs/
+
+# 其他
+.aider*
+.python-version
+README.md
+CONVENTIONS.md
+config.yaml
+config.yaml.example
+Dockerfile
+docker-compose.yml
+.dockerignore

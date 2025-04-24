@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 import sys
 from claude2api.auth import verify_token
+from claude2api.config import get_config
 from claude2api.handlers import (
     health_check_handler,
     modules_handler,
@@ -43,5 +44,10 @@ app.post("/v1/chat/completions", dependencies=[Depends(verify_token)])(
 if __name__ == "__main__":
     import uvicorn
 
-    logger.info("正在启动 Uvicorn 服务器...")
-    uvicorn.run(app)
+    # 从配置中获取地址和端口
+    config = get_config()
+    host, port_str = config.address.split(":")
+    port = int(port_str)
+
+    logger.info(f"正在启动 Uvicorn 服务器，地址: {host}，端口: {port}...")
+    uvicorn.run(app, host=host, port=port)
