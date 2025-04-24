@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
-import logging
+from loguru import logger
+import sys
 from claude2api.auth import verify_token
 from claude2api.handlers import (
     health_check_handler,
@@ -8,11 +9,16 @@ from claude2api.handlers import (
     chat_completions_handler,
 )
 
+logger.remove()
+logger.add(
+    sys.stderr, format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}", level="INFO"
+)
+logger.add("logs/file_{time}.log", rotation="10 MB", level="INFO")
+
 # 初始化 FastAPI 应用
 app = FastAPI()
 
 # 添加 CORS 中间件
-# 根据用户要求，修改 CORS 配置，限制允许的方法和头部
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # 允许所有来源
@@ -23,22 +29,19 @@ app.add_middleware(
         "Content-Length",
         "Accept-Encoding",
         "Authorization",
-    ],  # 允许特定的头部
+    ],  # 允许特定的Header
 )
 
 # 注册路由
 app.get("/health")(health_check_handler)
-# /v1/models 路由需要验证 token
 app.get("/v1/models", dependencies=[Depends(verify_token)])(modules_handler)
 app.post("/v1/chat/completions", dependencies=[Depends(verify_token)])(
     chat_completions_handler
 )
 
-# 设置日志级别（可选）
-logging.basicConfig(level=logging.INFO)
-
 
 if __name__ == "__main__":
     import uvicorn
 
+    logger.info("正在启动 Uvicorn 服务器...")
     uvicorn.run(app)
