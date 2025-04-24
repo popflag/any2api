@@ -35,7 +35,7 @@ class ClaudeConfig(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     sessions: List[SessionInfo] = Field(default_factory=list)
-    address: str = "0.0.0.0:8080"
+    address: str = "0.0.0.0:8000"
     api_key: str = ""
     proxy: str = ""
     chat_delete: bool = True
@@ -47,7 +47,7 @@ class ClaudeConfig(BaseModel):
     @field_validator("address")
     def validate_address(cls, v: str) -> str:
         if ":" not in v:
-            raise ValueError("address必须包含端口号，格式示例：0.0.0.0:8080")
+            raise ValueError("address必须包含端口号，格式示例：0.0.0.0:8000")
         host, port = v.split(":", 1)
         return f"{host}:{port}"
 
